@@ -1,0 +1,4 @@
+classes= 1
+train = C:\Users\Administrator\Desktop\yolo综合工具X0214\运行库\data\train.txt
+names = C:\Users\Administrator\Desktop\yolo综合工具X0214\运行库\data\int.names
+backup = C:\Users\Administrator\Desktop\yolo综合工具X0214\运行库\backup

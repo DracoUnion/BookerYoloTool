@@ -345,16 +345,16 @@ class YoloTool:
     """Application bootstrap (thin wrapper around the main window)."""
 
     def __init__(self, install_root: Optional[Path] = None):
+        from PyQt6.QtWidgets import QApplication
         self.install_root = install_root or Path.cwd()
+        self.app = QApplication.instance() or QApplication([])
         self.window = YoloMainWindow(self.install_root)
 
     def run(self) -> int:
-        from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtCore import QApplication as _CA  # noqa: F401
+        # from PyQt6.QtCore import QApplication as _CA  # noqa: F401
 
-        app = QApplication.instance() or QApplication([])
         self.window.show()
-        return app.exec()
+        return self.app.exec()
 
 
 def main() -> int:

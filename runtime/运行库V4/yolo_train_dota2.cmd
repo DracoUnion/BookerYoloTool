@@ -1,0 +1,1 @@
+darknet.exe detector train dota2/dota2.data ./cfg/yolov4-tiny-dota2.cfg

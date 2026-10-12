@@ -1,0 +1,6 @@
+classes=42
+train  =C:\Users\Administrator\Desktop\yolo综合工具X1223\分类库\data\train.list
+valid  =C:\Users\Administrator\Desktop\yolo综合工具X1223\分类库\data\test.list
+labels =C:\Users\Administrator\Desktop\yolo综合工具X1223\分类库\data\labels.txt
+backup =C:\Users\Administrator\Desktop\yolo综合工具X1223\分类库\backup\
+top=1

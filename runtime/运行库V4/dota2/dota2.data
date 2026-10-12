@@ -1,0 +1,5 @@
+classes= 4
+train = dota2/dota2_train.txt
+valid = dota2/dota2_val.txt
+names = dota2/dota2.names
+backup = backupdota2/

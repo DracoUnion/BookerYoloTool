@@ -1,0 +1,2 @@
+C:\Users\Administrator\Desktop\yolo综合工具X1223\分类库\darknet.exe classifier train C:\Users\Administrator\Desktop\yolo综合工具X1223\分类库\data\cifar.data C:\Users\Administrator\Desktop\yolo综合工具X1223\分类库\data\darknet.cfg 
+pause
