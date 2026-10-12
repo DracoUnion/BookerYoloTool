@@ -214,7 +214,7 @@ class YoloMainWindow(QMainWindow):
     def _populate_models(self) -> None:
         self.cmb_model.clear()
         for cfg in (self.registry.discover_default_v3(), self.registry.discover_default_v4()):
-            mark = "✔" if cfg.is_valid() else "○"
+            mark = "[OK]" if cfg.is_valid() else "[..]"
             self.cmb_model.addItem(f"{mark} {cfg.name} ({cfg.version})  {cfg.cfg_path}")
         if self.cmb_model.count():
             self.cmb_model.setCurrentIndex(0)

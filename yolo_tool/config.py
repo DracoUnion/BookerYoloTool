@@ -83,13 +83,14 @@ class ConfigRegistry:
 
     def discover_default_v4(self) -> YOLOConfig:
         root = self.install_root / RUNTIME_DIR_V4
+        data_dir = root / "dota2"
         return YOLOConfig(
             name="yolov4-tiny-dota2",
             version="v4",
             cfg_path=root / CFG_DIR / "yolov4-tiny-dota2.cfg",
-            names_path=root / DATA_DIR / "yolov4.names",
-            weights_path=root / DATA_DIR / "yolov4-tiny-dota2_last.weights",
-            data_config_path=root / DATA_DIR / "yolov4-tiny-dota2.data",
+            names_path=data_dir / "dota2.names",
+            weights_path=data_dir / "yolov4-tiny-dota2_last.weights",
+            data_config_path=data_dir / "dota2.data",
             train_command=root / "yolo_train_dota2.cmd",
             runtime_root=root,
         )

@@ -1,0 +1,51 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Project-specific: large runtime binaries (keep configs)
+runtime/**/*.dll
+runtime/**/*.exe
+runtime/**/*.i64
+runtime/**/*.idb
+runtime/**/backup*/
+runtime/**/JPEGImages/
+runtime/**/labels/
+runtime/**/dota2/dota2/
+runtime/**/backupdota2/
+
+# Keep these config/model files:
+!runtime/**/*.cfg
+!runtime/**/*.names
+!runtime/**/*.data
+!runtime/**/*.txt
+!runtime/**/*.cmd
+!runtime/**/*.png
+!runtime/**/*.doc
+
+# Logs
+*.log
+
+# Test artifacts
+.coverage
+.pytest_cache/
