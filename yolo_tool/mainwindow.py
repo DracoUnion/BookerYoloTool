@@ -94,7 +94,7 @@ class YoloMainWindow(QMainWindow):
         w = QWidget()
         lay = QVBoxLayout(w)
 
-        gb = QGroupBox("模型 (ultralytics: .pt / .onnx / .yaml)")
+        gb = QGroupBox("模型 (ultralytics)")
         form = QFormLayout(gb)
         self.cmb_model = QComboBox()
         self.cmb_model.setMinimumWidth(380)
@@ -104,9 +104,6 @@ class YoloMainWindow(QMainWindow):
         self._line_model_file.setProperty("role", "modelfile")
         self._line_model_file.setPlaceholderText("本地 .pt / .onnx / .yaml 模型文件")
         form.addRow("模型文件:", self._line_model_file)
-        self._line_names = QLineEdit()
-        self._line_names.setProperty("role", "names")
-        form.addRow("NAMES 文件:", self._line_names)  # display-only best-effort
 
         btns = QHBoxLayout()
         self.btn_refresh_models = QPushButton("刷新预设")
@@ -198,13 +195,8 @@ class YoloMainWindow(QMainWindow):
         self.cmb_model.clear()
         self._model_configs: dict[str, YOLOConfig] = {}
         for cfg in self.registry.presets():
-            mark = "[内置]" if cfg.is_builtin() else "[OK]"
             self._model_configs[cfg.name] = cfg
-            self.cmb_model.addItem(f"{mark} {cfg.name}")
-        for cfg in self.registry.scan_runtime_models():
-            mark = "[本地]" if cfg.is_valid() else "[..]"
-            self._model_configs[f"local:{cfg.name}"] = cfg
-            self.cmb_model.addItem(f"{mark} {cfg.name}: {cfg.model_source}")
+            self.cmb_model.addItem(f"[内置] {cfg.name}")
         self.cmb_model.blockSignals(False)
         if self.cmb_model.count():
             self.cmb_model.setCurrentIndex(0)
@@ -229,8 +221,6 @@ class YoloMainWindow(QMainWindow):
             return
         self.current_config = cfg
         self._line_model_file.setText(cfg.model_source)
-        names = self.registry.discover_names("v4" if "v4" in cfg.name else "v3")
-        self._line_names.setText(str(names) if names else "")
         self._model_label.setText(f"模型: {cfg.name}")
         self._status(f"已选择模型: {cfg.name}")
 
