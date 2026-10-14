@@ -46,6 +46,14 @@ runtime/**/backupdota2/
 # Logs
 *.log
 
+# Ultralytics artifacts
+runs/
+datasets/
+*.pt
+*.onnx
+*.engine
+*.tflite
+
 # Test artifacts
 .coverage
 .pytest_cache/

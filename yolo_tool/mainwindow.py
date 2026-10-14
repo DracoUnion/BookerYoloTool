@@ -1,12 +1,13 @@
 """
 Main application window.
 
-Recreates the MFC single-window YOLO tool as a PyQt6 tabbed layout:
+Recreates the MFC single-window YOLO tool as a PyQt6 tabbed layout.
+All YOLO work now goes through the ultralytics library:
 
-  * 模型选择 (Model) - pick .cfg/.names/.weights, browse images
+  * 模型选择 (Model) - pick an ultralytics model (.pt/.onnx/.yaml or built-in)
   * 推理/绘制 (Inference / yolo绘制) - run detection, show annotated image
-  * 训练 (Training) - run darknet train via the bundled .cmd
-  * 日志 (Log) - console output from darknet / subprocesses
+  * 训练 (Training) - run ultralytics model.train()
+  * 日志 (Log) - console output from ultralytics
 """
 
 from __future__ import annotations
@@ -15,8 +16,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -28,7 +29,6 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSlider,
     QSpinBox,
     QStatusBar,
@@ -38,32 +38,20 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .config import ConfigRegistry, IMAGE_EXTENSIONS
-from .engine import (
-    Detection,
-    InferenceResult,
-    make_engine,
-    YOLOEngine,
-)
+from .config import ConfigRegistry, YOLOConfig
+from .engine import InferenceResult, make_engine
 
 
-def qimage_from_bgr(img) -> QImage:
+def qimage_from_bgr(img):
     """Convert an OpenCV BGR ndarray to a Qt QImage (deep copy)."""
-    import numpy as np
+    import cv2
+    from PyQt6.QtGui import QImage
 
     if img.ndim == 2:
-        h, w = img.shape
-        rgb = cv2_grayscale_to_rgb(img)
-        return qimage_from_bgr(rgb)
-    h, w, c = img.shape
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    h, w = img.shape[:2]
     rgb = img[:, :, ::-1].copy()
-    return QImage(rgb.data, w, h, c * w, QImage.Format.Format_RGB888).copy()
-
-
-def cv2_grayscale_to_rgb(g):
-    import cv2
-
-    return cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+    return QImage(rgb.data, w, h, rgb.strides[0], QImage.Format.Format_RGB888).copy()
 
 
 class YoloMainWindow(QMainWindow):
@@ -71,18 +59,19 @@ class YoloMainWindow(QMainWindow):
 
     def __init__(self, install_root: Optional[Path] = None):
         super().__init__()
-        self.setWindowTitle("YOLO 综合工具 (PyQt6)")
+        self.setWindowTitle("YOLO 综合工具 (PyQt6 + ultralytics)")
         self.resize(1080, 720)
 
         self.registry = ConfigRegistry(install_root or Path.cwd())
-        self.engine: Optional[YOLOEngine] = None
-        self.current_config = None
+        self.engine = None
+        self.current_config: Optional[YOLOConfig] = None
         self.result: Optional[InferenceResult] = None
         self._last_image = None
 
         self._build_ui()
         self._populate_models()
         self._status("就绪 / ready")
+
     # ------------------------------------------------------------------ #
     # UI construction
     # ------------------------------------------------------------------ #
@@ -95,8 +84,6 @@ class YoloMainWindow(QMainWindow):
         self.setCentralWidget(tabs)
 
         self._status_label = QLabel(" ")
-        self._prog = self._prog_slider
-        self._time_label = QLabel("耗时: -")
         self._model_label = QLabel("未选择模型 / no model")
         sbar = QStatusBar()
         sbar.addWidget(self._model_label, 1)
@@ -107,27 +94,27 @@ class YoloMainWindow(QMainWindow):
         w = QWidget()
         lay = QVBoxLayout(w)
 
-        gb = QGroupBox("模型 / 运行库 (cfg + names + weights)")
+        gb = QGroupBox("模型 (ultralytics: .pt / .onnx / .yaml)")
         form = QFormLayout(gb)
         self.cmb_model = QComboBox()
-        self.cmb_model.setMinimumWidth(260)
+        self.cmb_model.setMinimumWidth(380)
+        self.cmb_model.currentIndexChanged.connect(self._on_preset_changed)
         form.addRow("模型预设:", self.cmb_model)
-        form.addRow("CFG 文件:", self._browse_line("cfg"))
-        form.addRow("NAMES 文件:", self._browse_line("names"))
-        form.addRow("WEIGHTS 文件:", self._browse_line("weights"))
+        self._line_model_file = QLineEdit()
+        self._line_model_file.setProperty("role", "modelfile")
+        self._line_model_file.setPlaceholderText("本地 .pt / .onnx / .yaml 模型文件")
+        form.addRow("模型文件:", self._line_model_file)
+        self._line_names = QLineEdit()
+        self._line_names.setProperty("role", "names")
+        form.addRow("NAMES 文件:", self._line_names)  # display-only best-effort
 
         btns = QHBoxLayout()
         self.btn_refresh_models = QPushButton("刷新预设")
         self.btn_refresh_models.clicked.connect(self._populate_models)
-        self.btn_select_cfg = QPushButton("选择 .cfg…")
-        self.btn_select_cfg.clicked.connect(lambda: self._pick("cfg", "模型文件(*.cfg)", "模型文件 (*.cfg)|*.cfg"))
-        self.btn_select_weights = QPushButton("选择 .weights / .pt…")
-        self.btn_select_weights.clicked.connect(
-            lambda: self._pick("weights", "权重文件", "权重文件 (*.weights;*.pt;*.onnx)|*.weights;*.pt;*.onnx")
-        )
+        self.btn_select_model = QPushButton("选择模型文件…")
+        self.btn_select_model.clicked.connect(self._pick_model_file)
         btns.addWidget(self.btn_refresh_models)
-        btns.addWidget(self.btn_select_cfg)
-        btns.addWidget(self.btn_select_weights)
+        btns.addWidget(self.btn_select_model)
         btns.addStretch(1)
 
         lay.addWidget(gb)
@@ -173,19 +160,19 @@ class YoloMainWindow(QMainWindow):
     def _train_tab(self) -> QWidget:
         w = QWidget()
         lay = QVBoxLayout(w)
-        gb = QGroupBox("训练 (darknet train)")
+        gb = QGroupBox("训练 (ultralytics model.train)")
         form = QFormLayout(gb)
         self.spn_iters = QSpinBox()
         self.spn_iters.setRange(1, 1_000_000)
-        self.spn_iters.setValue(500)
-        self.spn_iters.setSuffix(" 轮")
+        self.spn_iters.setValue(100)
+        self.spn_iters.setSuffix(" 轮/epochs")
         form.addRow("训练轮数:", self.spn_iters)
-        self.chk_clear = QPushButton("启用 -clear (从零训练)")
-        self.chk_clear.setCheckable(True)
-        form.addRow("", self.chk_clear)
-        self._line_train_log = QLineEdit()
-        self._line_train_log.setProperty("role", "trainlog")
-        form.addRow("输出日志:", self._line_train_log)
+        self._line_data_yaml = QLineEdit()
+        self._line_data_yaml.setPlaceholderText("数据集 YAML (可选, 默认 coco8.yaml)")
+        form.addRow("数据集 YAML:", self._line_data_yaml)
+        self._line_train_out = QLineEdit("runs/train")
+        self._line_train_out.setProperty("role", "trainlog")
+        form.addRow("输出目录:", self._line_train_out)
 
         self.btn_train = QPushButton("开始训练")
         self.btn_train.clicked.connect(self._start_training)
@@ -206,18 +193,46 @@ class YoloMainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # helpers
     # ------------------------------------------------------------------ #
-    def _browse_line(self, role: str) -> QLineEdit:
-        e = QLineEdit()
-        e.setProperty("role", role)
-        return e
-
     def _populate_models(self) -> None:
+        self.cmb_model.blockSignals(True)
         self.cmb_model.clear()
-        for cfg in (self.registry.discover_default_v3(), self.registry.discover_default_v4()):
-            mark = "[OK]" if cfg.is_valid() else "[..]"
-            self.cmb_model.addItem(f"{mark} {cfg.name} ({cfg.version})  {cfg.cfg_path}")
+        self._model_configs: dict[str, YOLOConfig] = {}
+        for cfg in self.registry.presets():
+            mark = "[内置]" if cfg.is_builtin() else "[OK]"
+            self._model_configs[cfg.name] = cfg
+            self.cmb_model.addItem(f"{mark} {cfg.name}")
+        for cfg in self.registry.scan_runtime_models():
+            mark = "[本地]" if cfg.is_valid() else "[..]"
+            self._model_configs[f"local:{cfg.name}"] = cfg
+            self.cmb_model.addItem(f"{mark} {cfg.name}: {cfg.model_source}")
+        self.cmb_model.blockSignals(False)
         if self.cmb_model.count():
             self.cmb_model.setCurrentIndex(0)
+            self._on_preset_changed(0)
+
+    def _current_config(self) -> Optional[YOLOConfig]:
+        cfg_name = self.cmb_model.currentText()
+        if not cfg_name:
+            return self.current_config
+        # prefer keyed lookup; fall back to matching against display text
+        for key, cfg in self._model_configs.items():
+            if cfg_name.endswith(key) or cfg_name.startswith(key):
+                return cfg
+        for cfg in self._model_configs.values():
+            if cfg.model_source in cfg_name:
+                return cfg
+        return self.current_config
+
+    def _on_preset_changed(self, _idx: int) -> None:
+        cfg = self._current_config()
+        if cfg is None:
+            return
+        self.current_config = cfg
+        self._line_model_file.setText(cfg.model_source)
+        names = self.registry.discover_names("v4" if "v4" in cfg.name else "v3")
+        self._line_names.setText(str(names) if names else "")
+        self._model_label.setText(f"模型: {cfg.name}")
+        self._status(f"已选择模型: {cfg.name}")
 
     def _status(self, text: str) -> None:
         self._status_label.setText(text)
@@ -226,32 +241,25 @@ class YoloMainWindow(QMainWindow):
         ts = time.strftime("%H:%M:%S")
         self._log_edit.append(f"[{ts}] {text}")
 
-    def _pick(self, role: str, caption: str, filter: str) -> None:
-        p = QFileDialog.getOpenFileName(self, caption, str(Path.cwd()), filter)[0]
+    def _pick_model_file(self) -> None:
+        filt = ("Ultralytics 模型 (*.pt *.onnx *.engine *.tflite *.yaml *.yml)|"
+                "*.pt;*.onnx;*.engine;*.tflite;*.yaml;*.yml")
+        p = QFileDialog.getOpenFileName(self, "选择模型文件", str(Path.cwd()), filt)[0]
         if p:
-            self._set_line(role, p)
-            if role == "cfg":
-                self._on_cfg_changed(p)
-
-    def _set_line(self, role: str, text: str) -> None:
-        for it in self.findChildren(QLineEdit):
-            if it.property("role") == role:
-                it.setText(text)
-                break
+            self._line_model_file.setText(p)
+            self.current_config = YOLOConfig(
+                name=Path(p).stem,
+                model_source=p,
+                imgsz=640,
+            )
+            self._model_label.setText(f"模型: {self.current_config.name}")
+            self._status(f"已选择本地模型: {p}")
 
     def _line_text(self, role: str) -> str:
         for it in self.findChildren(QLineEdit):
             if it.property("role") == role:
                 return it.text().strip()
         return ""
-
-    def _on_cfg_changed(self, cfg_path: str) -> None:
-        try:
-            self.current_config = self.registry.load_cfg_by_path(cfg_path)
-            self._model_label.setText(f"模型: {self.current_config.name}  ({self.current_config.version})")
-            self._status(f"已加载模型: {self.current_config.name}")
-        except Exception as exc:
-            self._log(f"配置加载失败: {exc}")
 
     def _on_conf_changed(self, v: int) -> None:
         self._conf_label.setText(f"{v / 100:.2f}")
@@ -262,10 +270,8 @@ class YoloMainWindow(QMainWindow):
     def _open_image(self) -> None:
         filt = "所有图片文件 (*.JPG;*.PNG;*.BMP;*.GIF;*.ICO;*.CUR)|*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.ico;*.cur"
         p = QFileDialog.getOpenFileName(self, "打开图片", str(Path.cwd()), filt)[0]
-        if not p:
-            return
-        self._set_line("cfg", self._line_text("cfg"))  # no-op keep lines
-        self._load_image(Path(p))
+        if p:
+            self._load_image(Path(p))
 
     def _load_image(self, path: Path) -> None:
         import cv2
@@ -281,18 +287,22 @@ class YoloMainWindow(QMainWindow):
         self.image_loaded.emit(path)
 
     def _run_inference(self) -> None:
+        cfg = self._current_config() or self.current_config
+        # if the user browsed a model file line directly, use it
+        file_line = self._line_text("modelfile")
+        if file_line and (cfg is None or cfg.model_source != Path(file_line).name):
+            cfg = YOLOConfig(name=Path(file_line).stem, model_source=file_line, imgsz=640)
+        if cfg is None:
+            QMessageBox.information(self, "提示", "请先选择模型。")
+            return
+        self.current_config = cfg
         if self._last_image is None:
             QMessageBox.information(self, "提示", "请先打开一张图片。")
             return
-        if self.current_config is None:
-            cfg_txt = self._line_text("cfg")
-            if cfg_txt:
-                self._on_cfg_changed(cfg_txt)
-            else:
-                QMessageBox.information(self, "提示", "请先选择模型 .cfg。")
-                return
+
         try:
-            self.engine = make_engine(self.current_config)
+            self.engine = make_engine(cfg)
+            self._status(f"正在加载模型 {cfg.name} (首次使用会自动下载)...")
             self.engine.load()
         except Exception as exc:
             QMessageBox.critical(self, "模型加载失败", str(exc))
@@ -317,28 +327,33 @@ class YoloMainWindow(QMainWindow):
         )
 
     def _start_training(self) -> None:
-        if self.current_config is None:
+        cfg = self._current_config() or self.current_config
+        if cfg is None:
             QMessageBox.information(self, "提示", "请先选择模型。")
             return
         try:
-            self.engine = make_engine(self.current_config)
+            self.engine = make_engine(cfg)
+            self.engine.load()
         except Exception as exc:
             self._log(f"引擎初始化失败: {exc}")
+            QMessageBox.critical(self, "引擎初始化失败", str(exc))
             return
+
         iters = self.spn_iters.value()
-        log_path = Path(self._line_text("trainlog") or f"train_{self.current_config.name}.log")
-        self._log(f"开始训练 {self.current_config.name}, 轮数={iters}")
+        data_yaml = self._line_data_yaml.text().strip() or None
+        out_dir = self._line_train_out.text().strip() or "runs/train"
+        log_path = Path(out_dir)
+        data = Path(data_yaml) if data_yaml else None
+        self._log(f"开始训练 {cfg.name}, epochs={iters}, 输出={out_dir}")
         try:
-            proc = self.engine.train(iters, log_path)
-            tail = ""
-            if log_path.exists():
-                tail = log_path.read_text(encoding="utf-8", errors="ignore")[-300:]
-            self._log(f"训练进程退出码 {proc.returncode}")
-            self._log(tail or "(无日志输出)")
-        except NotImplementedError:
-            self._log("当前引擎不支持训练 (纯推理后端)。请配置 darknet 运行库。")
+            self.engine.train(iters, log_path, data_yaml=data)
+            save_dir = getattr(self.engine, "last_train_dir", None)
+            self._log(f"训练完成: 输出目录 = {save_dir}")
+            out = (save_dir / "weights" / "best.pt") if save_dir else None
+            self._status("训练完成!" if out and out.exists() else "训练完成 (输出目录未含 best.pt)")
         except Exception as exc:
             self._log(f"训练失败: {exc}")
+            QMessageBox.critical(self, "训练失败", str(exc))
 
 
 class YoloTool:
@@ -346,19 +361,19 @@ class YoloTool:
 
     def __init__(self, install_root: Optional[Path] = None):
         from PyQt6.QtWidgets import QApplication
+
         self.install_root = install_root or Path.cwd()
         self.app = QApplication.instance() or QApplication([])
         self.window = YoloMainWindow(self.install_root)
 
     def run(self) -> int:
-        # from PyQt6.QtCore import QApplication as _CA  # noqa: F401
-
         self.window.show()
         return self.app.exec()
 
 
 def main() -> int:
     import sys
+
     root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
     tool = YoloTool(root)
     return tool.run()

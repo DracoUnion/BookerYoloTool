@@ -1,27 +1,15 @@
 """
-Configuration management for the YOLO tool.
+Configuration management for the YOLO tool (ultralytics).
 
-Mirrors the original MFC app's 运行库 (runtime library) layout:
-
-  运行库\
-    cfg\yolov3.cfg
-    cfg\yolov3-tiny.cfg
-    data\yolov3.names
-    data\yolov3.data
-  运行库V4\
-    cfg\yolov4-tiny-dota2.cfg
-    data\yolov4-tiny-dota2_last.weights
-    yolo_train_dota2.cmd
-    startcmd.exe
-    dota2\...
-
-All paths are resolved relative to an install root, so the tool can be
-shipped with a bundled runtime dir.
+Model sources are ultralytics-native: local `.pt` / `.onnx` / `.engine` /
+`.yaml` files or built-in checkpoint names (e.g. "yolov8n") that
+ultralytics auto-downloads on first use.  The original MFC tool's 运行库
+(runtime library) is still kept around for dataset images / class names,
+but all model loading + inference + training now go through ultralytics.
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -36,78 +24,110 @@ CFG_DIR = "cfg"
 # Supported image formats (from the original Open/Save dialog filter)
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".ico", ".cur")
 
+# Ultralytics-native model extensions we can load
+MODEL_EXTENSIONS = (".pt", ".onnx", ".engine", ".tflite", ".yaml", ".yml")
+
+# Built-in ultralytics checkpoints (auto-downloaded on first use)
+BUILTIN_MODELS = (
+    ("yolov8n", "yolov8n"),
+    ("yolov8s", "yolov8s"),
+    ("yolov8m", "yolov8m"),
+    ("yolov8l", "yolov8l"),
+    ("yolov8x", "yolov8x"),
+    ("yolo11n", "yolo11n"),
+    ("yolo11s", "yolo11s"),
+)
+
 
 @dataclass
 class YOLOConfig:
-    """Describes a YOLO model (darknet) variant to load / train / run."""
+    """Describes an ultralytics model to load / infer / train."""
 
     name: str
-    version: str  # "v3" | "v4"
-    cfg_path: Path
-    names_path: Path
-    weights_path: Optional[Path] = None
-    data_config_path: Optional[Path] = None  # *.data (train cfg)
+    model_source: str   # local path or ultralytics built-in name
+    task: str = "detect"
+    imgsz: int = 640
+    data_yaml: Optional[Path] = None
+    names_path: Optional[Path] = None
     runtime_root: Optional[Path] = None
-    train_command: Optional[Path] = None      # e.g. yolo_train_dota2.cmd
     extra: dict = field(default_factory=dict)
 
-    @property
-    def runtime_dir(self) -> Path:
-        if self.runtime_root is not None:
-            return self.runtime_root
-        return Path(self.version)
+    def is_builtin(self) -> bool:
+        """True if model_source is a checkpoint name (not a file path).
+
+        A built-in is a bare name: no path separators and either no
+        extension or a supported ultralytics extension.  Anything that
+        looks like a path (even a non-existent one) is treated as a file.
+        """
+        s = str(self.model_source)
+        if (
+            ":" in s  # drive letter (C:...)
+            or "/" in s
+            or "\\" in s
+            or Path(s).suffix.lower() in MODEL_EXTENSIONS
+        ):
+            return False
+        # bare name like "yolov8n" (optionally with .pt)
+        return True
 
     def is_valid(self) -> bool:
-        """Cfg + names must exist for inference; weights optional (train)."""
-        return self.cfg_path.exists() and self.names_path.exists()
+        """Built-ins are always valid (auto-download); files must exist."""
+        return self.is_builtin() or Path(self.model_source).expanduser().exists()
+
+    def __post_init__(self) -> None:
+        # normalize built-in names: "yolov8n.pt" -> "yolov8n" (bare checkpoint name)
+        if self.is_builtin():
+            self.model_source = Path(self.model_source).stem
 
 
 class ConfigRegistry:
-    """Discovers / registers YOLO model configs under an install root."""
+    """Discovers / registers ultralytics model configs."""
 
     def __init__(self, install_root: Optional[Path] = None):
         self.install_root = Path(install_root) if install_root else Path.cwd()
 
     # -- discovery --------------------------------------------------------
-    def discover_default_v3(self) -> YOLOConfig:
-        root = self.install_root / RUNTIME_DIR_V3
-        return YOLOConfig(
-            name="yolov3",
-            version="v3",
-            cfg_path=root / CFG_DIR / "yolov3.cfg",
-            names_path=root / DATA_DIR / "yolov3.names",
-            weights_path=root / "yolov3.weights",
-            data_config_path=root / DATA_DIR / "yolov3.data",
-            runtime_root=root,
-        )
+    def presets(self) -> list[YOLOConfig]:
+        """Return built-in ultralytics checkpoints as configs."""
+        return [
+            YOLOConfig(name=label, model_source=name, imgsz=640)
+            for label, name in BUILTIN_MODELS
+        ]
 
-    def discover_default_v4(self) -> YOLOConfig:
-        root = self.install_root / RUNTIME_DIR_V4
-        data_dir = root / "dota2"
-        return YOLOConfig(
-            name="yolov4-tiny-dota2",
-            version="v4",
-            cfg_path=root / CFG_DIR / "yolov4-tiny-dota2.cfg",
-            names_path=data_dir / "dota2.names",
-            weights_path=data_dir / "yolov4-tiny-dota2_last.weights",
-            data_config_path=data_dir / "dota2.data",
-            train_command=root / "yolo_train_dota2.cmd",
-            runtime_root=root,
-        )
+    def scan_runtime_models(self) -> list[YOLOConfig]:
+        """Find local .pt/.onnx/.yaml files inside the runtime dirs."""
+        found: list[YOLOConfig] = []
+        for root in (self.install_root / RUNTIME_DIR_V3, self.install_root / RUNTIME_DIR_V4):
+            if not root.exists():
+                continue
+            for model_file in sorted(root.rglob("*")):
+                if model_file.is_file() and model_file.suffix.lower() in MODEL_EXTENSIONS:
+                    found.append(
+                        YOLOConfig(
+                            name=model_file.stem,
+                            model_source=str(model_file),
+                            runtime_root=root,
+                        )
+                    )
+        return found
 
-    def load_cfg_by_path(self, cfg_path: str | Path) -> YOLOConfig:
-        """Build a config from an explicit .cfg path (user-selected)."""
-        cfg = Path(cfg_path)
-        # names sits in a sibling data dir
-        d = cfg.parent
-        names = d.parent / DATA_DIR / f"{cfg.stem}.names"
-        if not names.exists():
-            names = d / f"{cfg.stem}.names"
-        weights = d / f"{cfg.stem}.weights"
-        return YOLOConfig(
-            name=cfg.stem,
-            version="v3" if "v3" in cfg.stem else "v4",
-            cfg_path=cfg,
-            names_path=names,
-            weights_path=weights if weights.exists() else None,
-        )
+    # -- data / names helpers ----------------------------------------------
+    def discover_names(self, version: str = "v3") -> Optional[Path]:
+        """Best-effort path to a class-names file for dataset display."""
+        root = self.install_root / (RUNTIME_DIR_V3 if version == "v3" else RUNTIME_DIR_V4)
+        for cand in (
+            root / DATA_DIR / "yolov3.names",
+            root / DATA_DIR / "int.names",
+            root / "dota2" / "dota2.names",
+        ):
+            if cand.exists():
+                return cand
+        return None
+
+    def discover_data_yaml(self) -> Optional[Path]:
+        """Look for an ultralytics YAML dataset file in the runtime dirs."""
+        for root in (self.install_root / RUNTIME_DIR_V3, self.install_root / RUNTIME_DIR_V4):
+            for yaml_file in sorted(root.rglob("*.yaml")):
+                if "data" in yaml_file.stem.lower() or "dataset" in yaml_file.name.lower():
+                    return yaml_file
+        return None
