@@ -7,6 +7,9 @@ from yolo_tool.mainwindow import YoloTool
 
 
 def main() -> int:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
     return YoloTool(root).run()
 
