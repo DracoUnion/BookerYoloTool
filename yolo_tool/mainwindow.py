@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QObject
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -39,7 +39,16 @@ from PySide6.QtWidgets import (
 )
 
 from .config import ConfigRegistry, YOLOConfig
-from .engine import InferenceResult, make_engine
+from .engine import InferenceResult
+from .tasks import Task, TaskManager
+
+
+class TaskBridge(QObject):
+    """Adapts zero-Qt TaskManager events into Qt signals (UI thread)."""
+
+    task_done = Signal(str, object)        # label, task
+    task_failed = Signal(str, str)         # label, error
+    task_progress = Signal(str, str, int)  # label, message, pct
 
 
 def qimage_from_bgr(img):
@@ -57,16 +66,28 @@ def qimage_from_bgr(img):
 class YoloMainWindow(QMainWindow):
     image_loaded = Signal(Path)
 
-    def __init__(self, install_root: Optional[Path] = None):
+    def __init__(self, install_root=None, *, ctx=None):
         super().__init__()
         self.setWindowTitle("YOLO 综合工具 (PySide6 + ultralytics)")
         self.resize(1080, 720)
 
-        self.registry = ConfigRegistry(install_root or Path.cwd())
+        # Bootstrapped services (zero-Qt), injected by YoloTool.
+        if ctx is None:
+            from .bootstrap import build_context
+
+            ctx = build_context(install_root=install_root or str(Path.cwd()))
+        self.ctx = ctx
+        self.facade = ctx.services
+        self.tasks: TaskManager = ctx.tasks
+        self.bridge = TaskBridge()
+        self.tasks.subscribe(self._on_task_event)
+
+        self.registry = ctx.extra("registry") or ConfigRegistry(install_root or Path.cwd())
         self.engine = None
         self.current_config: Optional[YOLOConfig] = None
         self.result: Optional[InferenceResult] = None
         self._last_image = None
+        self._active_task: Optional[Task] = None
 
         self._build_ui()
         self._populate_models()
@@ -255,6 +276,60 @@ class YoloMainWindow(QMainWindow):
         self._conf_label.setText(f"{v / 100:.2f}")
 
     # ------------------------------------------------------------------ #
+    # background task bridge
+    # ------------------------------------------------------------------ #
+    def _on_task_event(self, ev: dict) -> None:
+        """Called from a worker thread: forward to Qt signals (thread-safe)."""
+        ev_type = ev["type"]
+        task: Optional[Task] = ev.get("task")
+        label = task.label if task is not None else ""
+        if ev_type == "done":
+            self.bridge.task_done.emit(label, task)
+        elif ev_type == "failed":
+            self.bridge.task_failed.emit(label, ev.get("error", "unknown error"))
+        elif ev_type == "progress":
+            pct = ev.get("pct", 0)
+            msg = ev.get("msg", "")
+            self.bridge.task_progress.emit(label, msg, pct)
+
+    def _submit(self, label: str, task: Task) -> Task:
+        """Track a background task and wire its completion to the UI."""
+        self._active_task = task
+        self._status(f"{label} 进行中…")
+        self.bridge.task_done.connect(self._on_task_done, Qt.ConnectionType.QueuedConnection)
+        self.bridge.task_failed.connect(self._on_task_failed, Qt.ConnectionType.QueuedConnection)
+        return task
+
+    def _on_task_done(self, label: str, task: Task) -> None:
+        if label == "load-model":
+            self.engine = task.result
+            self._status(f"模型加载完成: {getattr(self.engine, 'config', None).name if self.engine else '?'}")
+        elif label == "inference":
+            self.result = task.result
+            self._show_result(self.result)
+        elif label == "training":
+            self._log(f"训练完成: 输出目录 = {getattr(self.engine, 'last_train_dir', None)}")
+            self._status("训练完成!")
+        self._active_task = None
+
+    def _on_task_failed(self, label: str, error: str) -> None:
+        self._log(f"{label} 失败: {error}")
+        self._status(f"{label} 失败!")
+        QMessageBox.critical(self, f"{label} 失败", error)
+        self._active_task = None
+
+    def _show_result(self, result: InferenceResult) -> None:
+        ann = qimage_from_bgr(result.annotated())
+        self.lbl_image.setPixmap(QPixmap.fromImage(ann))
+        conf = self._prog_slider.value() / 100.0
+        self._time_label.setText(f"{result.elapsed_ms:.0f} ms")
+        self._status(f"检测到 {len(result.detections)} 个目标 @ {conf:.2f}")
+        self._log(
+            f"推理完成: {len(result.detections)} 目标, 置信度 {conf:.2f}, "
+            f"耗时 {result.elapsed_ms:.1f} ms"
+        )
+
+    # ------------------------------------------------------------------ #
     # actions
     # ------------------------------------------------------------------ #
     def _open_image(self) -> None:
@@ -290,43 +365,38 @@ class YoloMainWindow(QMainWindow):
             QMessageBox.information(self, "提示", "请先打开一张图片。")
             return
 
-        try:
-            self.engine = make_engine(cfg)
-            self._status(f"正在加载模型 {cfg.name} (首次使用会自动下载)...")
-            self.engine.load()
-        except Exception as exc:
-            QMessageBox.critical(self, "模型加载失败", str(exc))
-            self._log(f"模型加载失败: {exc}")
-            return
+        # Ensure a model is loaded in the background first, then run inference.
+        if self.engine is None or self.engine.model is None:
+            task = self.facade.load_model(cfg, label="load-model")
+        else:
+            task = None
 
-        t0 = time.perf_counter()
-        conf = self._prog_slider.value() / 100.0
-        try:
-            self.result = self.engine.infer(self._last_image, conf)
-        except Exception as exc:
-            self._log(f"推理失败: {exc}")
-            QMessageBox.critical(self, "推理失败", str(exc))
+        if task is not None:
+            self._submit("模型加载", task)
+            # Chain inference after model load completes.
+            self.bridge.task_done.connect(
+                lambda label, t: self._chain_inference(label, t, cfg),
+                Qt.ConnectionType.QueuedConnection,
+            )
+        else:
+            self._run_inference_now(cfg)
+
+    def _chain_inference(self, label: str, task: Task, cfg: YOLOConfig) -> None:
+        if label != "load-model" or task.state.name != "DONE":
             return
-        self._time_label.setText(f"{self.result.elapsed_ms:.0f} ms")
-        ann = qimage_from_bgr(self.result.annotated())
-        self.lbl_image.setPixmap(QPixmap.fromImage(ann))
-        self._status(f"检测到 {len(self.result.detections)} 个目标 @ {conf:.2f}")
-        self._log(
-            f"推理完成: {len(self.result.detections)} 目标, 置信度 {conf:.2f}, "
-            f"耗时 {self.result.elapsed_ms:.1f} ms"
-        )
+        self.engine = task.result
+        self._run_inference_now(cfg)
+
+    def _run_inference_now(self, cfg: YOLOConfig) -> None:
+        if self._last_image is None:
+            return
+        conf = self._prog_slider.value() / 100.0
+        self._submit("推理", self.facade.infer(self._last_image, conf, label="inference"))
 
     def _start_training(self) -> None:
         cfg = self._current_config() or self.current_config
         if cfg is None:
             QMessageBox.information(self, "提示", "请先选择模型。")
-            return
-        try:
-            self.engine = make_engine(cfg)
-            self.engine.load()
-        except Exception as exc:
-            self._log(f"引擎初始化失败: {exc}")
-            QMessageBox.critical(self, "引擎初始化失败", str(exc))
             return
 
         iters = self.spn_iters.value()
@@ -335,26 +405,25 @@ class YoloMainWindow(QMainWindow):
         log_path = Path(out_dir)
         data = Path(data_yaml) if data_yaml else None
         self._log(f"开始训练 {cfg.name}, epochs={iters}, 输出={out_dir}")
-        try:
-            self.engine.train(iters, log_path, data_yaml=data)
-            save_dir = getattr(self.engine, "last_train_dir", None)
-            self._log(f"训练完成: 输出目录 = {save_dir}")
-            out = (save_dir / "weights" / "best.pt") if save_dir else None
-            self._status("训练完成!" if out and out.exists() else "训练完成 (输出目录未含 best.pt)")
-        except Exception as exc:
-            self._log(f"训练失败: {exc}")
-            QMessageBox.critical(self, "训练失败", str(exc))
+
+        # Training runs off the UI thread; TaskManager emits done/failed
+        # events that the bridge forwards as Qt signals.
+        task = self.facade.train(cfg, iters, log_path, data_yaml=data, label="training")
+        self._submit("训练", task)
 
 
 class YoloTool:
-    """Application bootstrap (thin wrapper around the main window)."""
+    """Application wrapper: builds the service graph once and hands it to the UI."""
 
-    def __init__(self, install_root: Optional[Path] = None):
+    def __init__(self, install_root: Optional[Path] = None, *, ctx=None):
         from PySide6.QtWidgets import QApplication
 
+        from .bootstrap import build_context
+
         self.install_root = install_root or Path.cwd()
+        self.ctx = ctx or build_context(install_root=str(self.install_root))
         self.app = QApplication.instance() or QApplication([])
-        self.window = YoloMainWindow(self.install_root)
+        self.window = YoloMainWindow(self.install_root, ctx=self.ctx)
 
     def run(self) -> int:
         self.window.show()
