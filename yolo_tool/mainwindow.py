@@ -1,7 +1,7 @@
 """
 Main application window.
 
-Recreates the MFC single-window YOLO tool as a PyQt6 tabbed layout.
+Recreates the MFC single-window YOLO tool as a PySide6 tabbed layout.
 All YOLO work now goes through the ultralytics library:
 
   * 模型选择 (Model) - pick an ultralytics model (.pt/.onnx/.yaml or built-in)
@@ -16,9 +16,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -45,7 +45,7 @@ from .engine import InferenceResult, make_engine
 def qimage_from_bgr(img):
     """Convert an OpenCV BGR ndarray to a Qt QImage (deep copy)."""
     import cv2
-    from PyQt6.QtGui import QImage
+    from PySide6.QtGui import QImage
 
     if img.ndim == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -55,11 +55,11 @@ def qimage_from_bgr(img):
 
 
 class YoloMainWindow(QMainWindow):
-    image_loaded = pyqtSignal(Path)
+    image_loaded = Signal(Path)
 
     def __init__(self, install_root: Optional[Path] = None):
         super().__init__()
-        self.setWindowTitle("YOLO 综合工具 (PyQt6 + ultralytics)")
+        self.setWindowTitle("YOLO 综合工具 (PySide6 + ultralytics)")
         self.resize(1080, 720)
 
         self.registry = ConfigRegistry(install_root or Path.cwd())
@@ -350,7 +350,7 @@ class YoloTool:
     """Application bootstrap (thin wrapper around the main window)."""
 
     def __init__(self, install_root: Optional[Path] = None):
-        from PyQt6.QtWidgets import QApplication
+        from PySide6.QtWidgets import QApplication
 
         self.install_root = install_root or Path.cwd()
         self.app = QApplication.instance() or QApplication([])

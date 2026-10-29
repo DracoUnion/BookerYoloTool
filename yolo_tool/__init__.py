@@ -1,5 +1,5 @@
 """
-YOLO 综合工具 - PyQt6 rewrite of yolo综合工具X0215.exe (MFC original).
+YOLO 综合工具 - PySide6 rewrite of yolo综合工具X0215.exe (MFC original).
 
 A GUI for YOLO v3 / YOLO v4 training and inference that wraps the
 darknet runtime.  Features mirrored from the original:

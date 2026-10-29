@@ -1,6 +1,6 @@
-# YOLO 综合工具 (PyQt6 + ultralytics 重写)
+# YOLO 综合工具 (PySide6 + ultralytics 重写)
 
-A Python + PyQt6 rewrite of `yolo综合工具X0215.exe`, a 32-bit MFC tool
+A Python + PySide6 rewrite of `yolo综合工具X0215.exe`, a 32-bit MFC tool
 for YOLO training and inference. **All YOLO calls now use the
 [ultralytics](https://github.com/ultralytics/ultralytics) library**
 (YOLOv8 / YOLO11), replacing the original darknet runtime.
@@ -34,7 +34,7 @@ python -m venv .venv
 yolo_tool/
   config.py      # YOLOConfig + ConfigRegistry (ultralytics presets + runtime scan)
   engine.py      # YOLOEngine (ultralytics): load / infer / train
-  mainwindow.py  # PyQt6 tabbed UI: 模型选择 / 推理·绘制 / 训练 / 日志
+  mainwindow.py  # PySide6 tabbed UI: 模型选择 / 推理·绘制 / 训练 / 日志
 runtime/         # original MFC exe + 运行库/运行库V4 (gitignored binaries)
 yolo_tool_gui.py # console entry point
 tests/test_engine.py
@@ -50,7 +50,7 @@ pytest tests/
 
 ## 依赖 / Dependencies
 
-`PyQt6`, `ultralytics` (pulls torch, opencv). Installed in the venv to
+`PySide6`, `ultralytics` (pulls torch, opencv). Installed in the venv to
 avoid touching the system Python that IDA's MCP server uses.
 
 ## 原始程序逆向信息 / Original RE notes
